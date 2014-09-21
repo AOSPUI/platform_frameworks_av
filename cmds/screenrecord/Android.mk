@@ -16,10 +16,6 @@ LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
 
-ifeq ($(BOARD_SCREENRECORD_LANDSCAPE_ONLY),true)
-	LOCAL_CFLAGS += -DLANDSCAPE_ONLY
-endif
-
 LOCAL_SRC_FILES := \
 	screenrecord.cpp \
 
