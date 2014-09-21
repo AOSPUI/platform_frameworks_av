@@ -42,6 +42,7 @@
 #include "api1/Camera2Client.h"
 #include "api_pro/ProCamera2Client.h"
 #include "api2/CameraDeviceClient.h"
+#include "utils/CameraTraces.h"
 #include "CameraDeviceFactory.h"
 
 namespace android {
@@ -880,8 +881,18 @@ void CameraService::loadSound() {
     LOG1("CameraService::loadSound ref=%d", mSoundRef);
     if (mSoundRef++) return;
 
-    mSoundPlayer[SOUND_SHUTTER] = newMediaPlayer("/system/media/audio/ui/camera_click.ogg");
-    mSoundPlayer[SOUND_RECORDING] = newMediaPlayer("/system/media/audio/ui/VideoRecord.ogg");
+    char value[PROPERTY_VALUE_MAX];
+    property_get("persist.sys.camera-sound", value, "1");
+    int selectedSound = atoi(value);
+
+    if(selectedSound != 0) {
+        mSoundPlayer[SOUND_SHUTTER] = newMediaPlayer(selectedSound == 1 ? "/system/media/audio/ui/camera_click.ogg" : "/system/media/audio/ui/camera_click_realistic.ogg");
+        mSoundPlayer[SOUND_RECORDING] = newMediaPlayer("/system/media/audio/ui/VideoRecord.ogg");
+    }
+    else {
+        mSoundPlayer[SOUND_SHUTTER] = NULL;
+        mSoundPlayer[SOUND_RECORDING] = NULL;
+    }
 }
 
 void CameraService::releaseSound() {
@@ -959,7 +970,9 @@ CameraService::BasicClient::BasicClient(const sp<CameraService>& cameraService,
     mServicePid = servicePid;
     mOpsActive = false;
     mDestructionStarted = false;
+#ifdef QCOM_HARDWARE
     mBurstCnt = 0;
+#endif
 }
 
 CameraService::BasicClient::~BasicClient() {
@@ -989,11 +1002,6 @@ status_t CameraService::BasicClient::startCameraOps() {
     res = mAppOpsManager.startOp(AppOpsManager::OP_CAMERA,
             mClientUid, mClientPackageName);
 
-    if (res != AppOpsManager::MODE_ALLOWED) {
-        ALOGI("Camera %d: Access for \"%s\" has been revoked",
-                mCameraId, String8(mClientPackageName).string());
-        return PERMISSION_DENIED;
-    }
     mOpsActive = true;
     return OK;
 }
@@ -1219,6 +1227,10 @@ status_t CameraService::dump(int fd, const Vector<String16>& args) {
         }
 
         if (locked) mServiceLock.unlock();
+
+        // Dump camera traces if there were any
+        write(fd, "\n", 1);
+        camera3::CameraTraces::dump(fd, args);
 
         // change logging level
         int n = args.size();

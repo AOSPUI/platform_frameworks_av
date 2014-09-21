@@ -23,6 +23,7 @@
 #include "include/MPEG4Extractor.h"
 #include "include/WAVExtractor.h"
 #include "include/OggExtractor.h"
+#include "include/PCMExtractor.h"
 #include "include/MPEG2PSExtractor.h"
 #include "include/MPEG2TSExtractor.h"
 #include "include/DRMExtractor.h"
@@ -39,7 +40,9 @@
 #include <media/stagefright/MetaData.h>
 #include <utils/String8.h>
 
+#ifdef QCOM_HARDWARE
 #include "include/ExtendedUtils.h"
+#endif
 
 namespace android {
 
@@ -118,6 +121,10 @@ sp<MediaExtractor> MediaExtractor::Create(
         ret = new AACExtractor(source, meta);
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_MPEG2PS)) {
         ret = new MPEG2PSExtractor(source);
+#ifdef STE_FM
+    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_RAW)) {
+        ret = new PCMExtractor(source);
+#endif
     }
 
     if (ret != NULL) {
@@ -128,7 +135,11 @@ sp<MediaExtractor> MediaExtractor::Create(
        }
     }
 
+#ifdef QCOM_HARDWARE
     return ExtendedUtils::MediaExtractor_CreateIfNeeded(ret, source, mime);
+#else
+    return ret;
+#endif
 }
 
 }  // namespace android

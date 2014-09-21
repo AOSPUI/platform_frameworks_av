@@ -148,6 +148,7 @@ NuPlayer::NuPlayer()
       mVideoIsAVC(false),
       mAudioEOS(false),
       mVideoEOS(false),
+      mDecoderEOS(false),
       mScanSourcesPending(false),
       mScanSourcesGeneration(0),
       mPollDurationGeneration(0),
@@ -446,6 +447,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
             mVideoIsAVC = false;
             mAudioEOS = false;
             mVideoEOS = false;
+            mDecoderEOS = false;
             mSkipRenderingAudioUntilMediaTimeUs = -1;
             mSkipRenderingVideoUntilMediaTimeUs = -1;
             mVideoLateByUs = 0;
@@ -555,6 +557,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
                 if (err == ERROR_END_OF_STREAM) {
                     ALOGV("got %s decoder EOS", audio ? "audio" : "video");
+                    mDecoderEOS = true;
                 } else {
                     ALOGV("got %s decoder EOS w/ error %d",
                          audio ? "audio" : "video",
@@ -748,6 +751,15 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 if ((mAudioEOS || mAudioDecoder == NULL)
                         && (mVideoEOS || mVideoDecoder == NULL)) {
                     notifyListener(MEDIA_PLAYBACK_COMPLETE, 0, 0);
+                } else {
+                    if ((audio && mFlushingAudio == AWAITING_DISCONTINUITY) ||
+                            (!audio && mFlushingVideo == AWAITING_DISCONTINUITY)) {
+                        sp<ABuffer> accessUnit;
+                        if (mSource->dequeueAccessUnit(audio, &accessUnit) == INFO_DISCONTINUITY) {
+                            flushDecoder(audio, true);
+                            mDecoderEOS = false;
+                        }
+                    }
                 }
             } else if (what == Renderer::kWhatPosition) {
                 int64_t positionUs;
@@ -989,6 +1001,13 @@ status_t NuPlayer::feedDecoderInputData(bool audio, const sp<AMessage> &msg) {
                     }
 
                     flushDecoder(audio, formatChange);
+                    if (mDecoderEOS) {
+                        sp<ABuffer> accessUnit;
+                        if (mSource->dequeueAccessUnit(!audio, &accessUnit) == INFO_DISCONTINUITY) {
+                            flushDecoder(!audio, true);
+                            mDecoderEOS = false;
+                        }
+                    }
                 } else {
                     // This stream is unaffected by the discontinuity
 

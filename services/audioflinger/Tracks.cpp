@@ -36,7 +36,6 @@
 #include <media/nbaio/PipeReader.h>
 
 // ----------------------------------------------------------------------------
-
 // Note: the following macro is used for extremely verbose logging message.  In
 // order to run with ALOG_ASSERT turned on, we need to have LOG_NDEBUG set to
 // 0; but one side effect of this is to turn all LOGV's as well.  Some messages
@@ -66,9 +65,12 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
             audio_format_t format,
             audio_channel_mask_t channelMask,
             size_t frameCount,
+#ifdef QCOM_HARDWARE
             uint32_t flags,
+#endif
             const sp<IMemory>& sharedBuffer,
             int sessionId,
+            int clientUid,
             bool isOut)
     :   RefBase(),
         mThread(thread),
@@ -80,16 +82,35 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
         mFormat(format),
         mChannelMask(channelMask),
         mChannelCount(popcount(channelMask)),
-        mFrameSize((audio_is_linear_pcm(format) || audio_is_supported_compressed(format)) ?
+#ifdef QCOM_HARDWARE
+        mFrameSize((audio_is_linear_pcm(format) || audio_is_compress_voip_format(format)) ?
         ((flags & IAudioFlinger::TRACK_VOICE_COMMUNICATION)? mChannelCount * sizeof(int16_t) : mChannelCount * audio_bytes_per_sample(format)) : sizeof(int8_t)),
+#else
+        mFrameSize(audio_is_linear_pcm(format) ?
+                mChannelCount * audio_bytes_per_sample(format) : sizeof(int8_t)),
+#endif
         mFrameCount(frameCount),
+#ifdef QCOM_HARDWARE
         mFlags(0),
+#endif
         mSessionId(sessionId),
         mIsOut(isOut),
         mServerProxy(NULL),
         mId(android_atomic_inc(&nextTrackId)),
         mTerminated(false)
 {
+    // if the caller is us, trust the specified uid
+    if (IPCThreadState::self()->getCallingPid() != getpid_cached || clientUid == -1) {
+        int newclientUid = IPCThreadState::self()->getCallingUid();
+        if (clientUid != -1 && clientUid != newclientUid) {
+            ALOGW("uid %d tried to pass itself off as %d", newclientUid, clientUid);
+        }
+        clientUid = newclientUid;
+    }
+    // clientUid contains the uid of the app that is responsible for this track, so we can blame
+    // battery usage on it.
+    mUid = clientUid;
+
     // client == 0 implies sharedBuffer == 0
     ALOG_ASSERT(!(client == 0 && sharedBuffer != 0));
 
@@ -98,6 +119,7 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
 
     // ALOGD("Creating track with %d buffers @ %d bytes", bufferCount, bufferSize);
     size_t size = sizeof(audio_track_cblk_t);
+#ifdef QCOM_HARDWARE
     uint8_t channelCount = popcount(channelMask);
     size_t bufferSize = 0;
     if (flags & IAudioFlinger::TRACK_VOICE_COMMUNICATION) {
@@ -105,19 +127,22 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
     } else {
        if ( (format == AUDIO_FORMAT_PCM_16_BIT) ||
             (format == AUDIO_FORMAT_PCM_8_BIT)) {
-          bufferSize = frameCount * channelCount * sizeof(int16_t);
+          bufferSize = roundup(frameCount) * channelCount * sizeof(int16_t);
        } else if (format == AUDIO_FORMAT_AMR_NB) {
-          bufferSize = frameCount * channelCount * AMR_FRAMESIZE;    // full rate frame size
+          bufferSize = roundup(frameCount) * channelCount * AMR_FRAMESIZE;    // full rate frame size
        } else if (format == AUDIO_FORMAT_EVRC) {
-          bufferSize = frameCount * channelCount * EVRC_FRAMESIZE;   // full rate frame size
+          bufferSize = roundup(frameCount) * channelCount * EVRC_FRAMESIZE;   // full rate frame size
        } else if (format == AUDIO_FORMAT_QCELP) {
-          bufferSize = frameCount * channelCount * QCELP_FRAMESIZE;  // full rate frame size
+          bufferSize = roundup(frameCount) * channelCount * QCELP_FRAMESIZE;  // full rate frame size
        } else if (format == AUDIO_FORMAT_AAC) {
-          bufferSize = frameCount * AAC_FRAMESIZE;                   // full rate frame size
+          bufferSize = roundup(frameCount) * AAC_FRAMESIZE;                   // full rate frame size
        } else if (format == AUDIO_FORMAT_AMR_WB) {
-          bufferSize = frameCount * channelCount * AMR_WB_FRAMESIZE; // full rate frame size
+          bufferSize = roundup(frameCount) * channelCount * AMR_WB_FRAMESIZE; // full rate frame size
        }
     }
+#else
+    size_t bufferSize = (sharedBuffer == 0 ? roundup(frameCount) : frameCount) * mFrameSize;
+#endif
 
     if (sharedBuffer == 0) {
         size += bufferSize;
@@ -146,6 +171,7 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
         mCblk->frameCount_ = frameCount;
         if (sharedBuffer == 0) {
             mBuffer = (char*)mCblk + sizeof(audio_track_cblk_t);
+#ifdef QCOM_HARDWARE
             if (flags & IAudioFlinger::TRACK_VOICE_COMMUNICATION) {
                 memset(mBuffer, 0, bufferSize);
             } else {
@@ -154,21 +180,24 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
                     memset(mBuffer, 0, bufferSize);
                 } else if (format == AUDIO_FORMAT_AMR_NB) {
                     // full rate frame size
-                    memset(mBuffer, 0, frameCount * channelCount * AMR_FRAMESIZE);
+                    memset(mBuffer, 0, bufferSize);
                 } else if (format == AUDIO_FORMAT_EVRC) {
                     // full rate frame size
-                    memset(mBuffer, 0, frameCount * channelCount * EVRC_FRAMESIZE);
+                    memset(mBuffer, 0, bufferSize);
                 } else if (format == AUDIO_FORMAT_QCELP) {
                     // full rate frame size
-                    memset(mBuffer, 0, frameCount * channelCount * QCELP_FRAMESIZE);
+                    memset(mBuffer, 0, bufferSize);
                 } else if (format == AUDIO_FORMAT_AAC) {
                     // full rate frame size
-                    memset(mBuffer, 0, frameCount * AAC_FRAMESIZE);
+                    memset(mBuffer, 0, bufferSize);
                 } else if (format == AUDIO_FORMAT_AMR_WB) {
                     // full rate frame size
-                    memset(mBuffer, 0, frameCount * channelCount * AMR_WB_FRAMESIZE);
+                    memset(mBuffer, 0, bufferSize);
                 }
             }
+#else
+            memset(mBuffer, 0, bufferSize);
+#endif
         } else {
             mBuffer = sharedBuffer->pointer();
 #if 0
@@ -357,10 +386,16 @@ AudioFlinger::PlaybackThread::Track::Track(
             size_t frameCount,
             const sp<IMemory>& sharedBuffer,
             int sessionId,
+            int uid,
             IAudioFlinger::track_flags_t flags)
-    :   TrackBase(thread, client, sampleRate, format, channelMask, frameCount,
-     ((audio_stream_type_t)streamType == AUDIO_STREAM_VOICE_CALL)? IAudioFlinger::TRACK_VOICE_COMMUNICATION:0x0,
-     sharedBuffer, sessionId, true /*isOut*/),
+#ifdef QCOM_HARDWARE
+      :   TrackBase(thread, client, sampleRate, format, channelMask, frameCount,
+	((audio_stream_type_t)streamType == AUDIO_STREAM_VOICE_CALL)? IAudioFlinger::TRACK_VOICE_COMMUNICATION:0x0,
+        sharedBuffer, sessionId, uid, true /*isOut*/),
+#else
+    :   TrackBase(thread, client, sampleRate, format, channelMask, frameCount, sharedBuffer,
+            sessionId, uid, true /*isOut*/),
+#endif
     mFillingUpStatus(FS_INVALID),
     // mRetryCount initialized later when needed
     mSharedBuffer(sharedBuffer),
@@ -883,6 +918,7 @@ status_t AudioFlinger::PlaybackThread::Track::attachAuxEffect(int EffectId)
                                         dstChain->strategy(),
                                         AUDIO_SESSION_OUTPUT_MIX,
                                         effect->id());
+            AudioSystem::setEffectEnabled(effect->id(), effect->isEnabled());
         }
         status = playbackThread->attachAuxEffect(this, EffectId);
     }
@@ -1008,13 +1044,14 @@ AudioFlinger::PlaybackThread::TimedTrack::create(
             audio_channel_mask_t channelMask,
             size_t frameCount,
             const sp<IMemory>& sharedBuffer,
-            int sessionId) {
+            int sessionId,
+            int uid) {
     if (!client->reserveTimedTrack())
         return 0;
 
     return new TimedTrack(
         thread, client, streamType, sampleRate, format, channelMask, frameCount,
-        sharedBuffer, sessionId);
+        sharedBuffer, sessionId, uid);
 }
 
 AudioFlinger::PlaybackThread::TimedTrack::TimedTrack(
@@ -1026,9 +1063,10 @@ AudioFlinger::PlaybackThread::TimedTrack::TimedTrack(
             audio_channel_mask_t channelMask,
             size_t frameCount,
             const sp<IMemory>& sharedBuffer,
-            int sessionId)
+            int sessionId,
+            int uid)
     : Track(thread, client, streamType, sampleRate, format, channelMask,
-            frameCount, sharedBuffer, sessionId, IAudioFlinger::TRACK_TIMED),
+            frameCount, sharedBuffer, sessionId, uid, IAudioFlinger::TRACK_TIMED),
       mQueueHeadInFlight(false),
       mTrimQueueHeadOnRelease(false),
       mFramesPendingInQueue(0),
@@ -1521,9 +1559,10 @@ AudioFlinger::PlaybackThread::OutputTrack::OutputTrack(
             uint32_t sampleRate,
             audio_format_t format,
             audio_channel_mask_t channelMask,
-            size_t frameCount)
+            size_t frameCount,
+            int uid)
     :   Track(playbackThread, NULL, AUDIO_STREAM_CNT, sampleRate, format, channelMask, frameCount,
-                NULL, 0, IAudioFlinger::TRACK_DEFAULT),
+                NULL, 0, uid, IAudioFlinger::TRACK_DEFAULT),
     mActive(false), mSourceThread(sourceThread), mClientProxy(NULL)
 {
 
@@ -1783,14 +1822,24 @@ AudioFlinger::RecordThread::RecordTrack::RecordTrack(
             audio_format_t format,
             audio_channel_mask_t channelMask,
             size_t frameCount,
+#ifdef QCOM_HARDWARE
             uint32_t flags,
-            int sessionId)
-    :   TrackBase(thread, client, sampleRate, format, channelMask, frameCount,
-        flags, 0 /*sharedBuffer*/, sessionId, false /*isOut*/),
+#endif
+            int sessionId,
+            int uid)
+#ifdef QCOM_HARDWARE
+    :   TrackBase(thread, client, sampleRate, format,
+                  channelMask, frameCount, flags, 0 /*sharedBuffer*/, sessionId, uid, false /*isOut*/),
+#else
+    :   TrackBase(thread, client, sampleRate, format,
+                  channelMask, frameCount, 0 /*sharedBuffer*/, sessionId, uid, false /*isOut*/),
+#endif
         mOverflow(false)
 {
     ALOGV("RecordTrack constructor");
+#ifdef QCOM_HARDWARE
     mFlags = flags;
+#endif
     if (mCblk != NULL) {
         mAudioRecordServerProxy = new AudioRecordServerProxy(mCblk, mBuffer, frameCount,
                 mFrameSize);

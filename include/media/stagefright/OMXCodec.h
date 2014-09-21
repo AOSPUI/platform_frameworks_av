@@ -100,8 +100,11 @@ struct OMXCodec : public MediaSource,
         kSupportsMultipleFramesPerInputBuffer = 1024,
         kRequiresLargerEncoderOutputBuffer    = 2048,
         kOutputBuffersAreUnreadable           = 4096,
+#ifdef QCOM_HARDWARE
         kRequiresGlobalFlush                  = 0x20000000, // 2^29
         kRequiresWMAProComponent              = 0x40000000, //2^30
+#endif
+        kRequiresSetProfileLevel              = 8192,
     };
 
     struct CodecNameAndQuirks {
@@ -141,14 +144,18 @@ private:
         EXECUTING_TO_IDLE,
         IDLE_TO_LOADED,
         RECONFIGURING,
+#ifdef QCOM_HARDWARE
         PAUSING,
         FLUSHING,
         PAUSED,
+#endif
         ERROR
     };
 
     enum {
+#ifdef QCOM_HARDWARE
         kPortIndexBoth   = -1,
+#endif
         kPortIndexInput  = 0,
         kPortIndexOutput = 1
     };
@@ -261,7 +268,11 @@ private:
             OMX_VIDEO_CODINGTYPE compressionFormat,
             OMX_COLOR_FORMATTYPE colorFormat);
 
+#ifdef QCOM_HARDWARE
     status_t setVideoInputFormat(
+#else
+    void setVideoInputFormat(
+#endif
             const char *mime, const sp<MetaData>& meta);
 
     status_t setupBitRate(int32_t bitRate);
@@ -290,13 +301,16 @@ private:
     void setJPEGInputFormat(
             OMX_U32 width, OMX_U32 height, OMX_U32 compressedSize);
 
-    void setMinBufferSize(OMX_U32 portIndex, OMX_U32 size);
+    status_t setMinBufferSize(OMX_U32 portIndex, OMX_U32 size);
 
     void setRawAudioFormat(
             OMX_U32 portIndex, int32_t sampleRate, int32_t numChannels);
 
     status_t allocateBuffers();
     status_t allocateBuffersOnPort(OMX_U32 portIndex);
+#ifdef USE_SAMSUNG_COLORFORMAT
+    void setNativeWindowColorFormat(OMX_COLOR_FORMATTYPE &eNativeColorFormat);
+#endif
     status_t allocateOutputBuffersFromNativeWindow();
 
     status_t queueBufferToNativeWindow(BufferInfo *info);
@@ -365,8 +379,10 @@ private:
     OMXCodec(const OMXCodec &);
     OMXCodec &operator=(const OMXCodec &);
 
+#ifdef QCOM_HARDWARE
     int32_t mNumBFrames;
     bool mInSmoothStreamingMode;
+#endif
 };
 
 struct CodecCapabilities {

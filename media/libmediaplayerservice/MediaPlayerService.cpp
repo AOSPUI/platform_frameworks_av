@@ -81,7 +81,9 @@
 #include "HDCP.h"
 #include "HTTPBase.h"
 #include "RemoteDisplay.h"
+#ifdef QCOM_HARDWARE
 #define DEFAULT_SAMPLE_RATE 44100
+#endif
 
 namespace {
 using android::media::Metadata;
@@ -594,7 +596,7 @@ sp<MediaPlayerBase> MediaPlayerService::Client::setDataSource_pre(
     }
 
     if (!p->hardwareOutput()) {
-        mAudioOutput = new AudioOutput(mAudioSessionId);
+        mAudioOutput = new AudioOutput(mAudioSessionId, IPCThreadState::self()->getCallingUid());
         static_cast<MediaPlayerInterface*>(p.get())->setAudioSink(mAudioOutput);
     }
 
@@ -1187,6 +1189,7 @@ status_t MediaPlayerService::decode(const char* url, uint32_t *pSampleRate, int*
     ALOGV("decode(%s)", url);
     sp<MediaPlayerBase> player;
     status_t status = BAD_VALUE;
+    status_t err = OK;
 
     // Protect our precious, precious DRMd ringtones by only allowing
     // decoding of http, but not filesystem paths or content Uris.
@@ -1219,7 +1222,11 @@ status_t MediaPlayerService::decode(const char* url, uint32_t *pSampleRate, int*
     if (cache->wait() != NO_ERROR) goto Exit;
 
     ALOGV("start");
-    player->start();
+    err = player->start();
+    if (err != NO_ERROR) {
+        ALOGE("Error: %d Starting player in decode", err);
+        goto Exit;
+    }
 
     ALOGV("wait for playback complete");
     cache->wait();
@@ -1249,6 +1256,7 @@ status_t MediaPlayerService::decode(int fd, int64_t offset, int64_t length,
     ALOGV("decode(%d, %lld, %lld)", fd, offset, length);
     sp<MediaPlayerBase> player;
     status_t status = BAD_VALUE;
+    status_t err = OK;
 
     player_type playerType = MediaPlayerFactory::getPlayerType(NULL /* client */,
                                                                fd,
@@ -1274,7 +1282,11 @@ status_t MediaPlayerService::decode(int fd, int64_t offset, int64_t length,
     if (cache->wait() != NO_ERROR) goto Exit;
 
     ALOGV("start");
-    player->start();
+    err = player->start();
+    if (err != NO_ERROR) {
+        ALOGE("Error: %d Starting player in decode", err);
+        goto Exit;
+    }
 
     ALOGV("wait for playback complete");
     cache->wait();
@@ -1300,12 +1312,13 @@ Exit:
 
 #undef LOG_TAG
 #define LOG_TAG "AudioSink"
-MediaPlayerService::AudioOutput::AudioOutput(int sessionId)
+MediaPlayerService::AudioOutput::AudioOutput(int sessionId, int uid)
     : mCallback(NULL),
       mCallbackCookie(NULL),
       mCallbackData(NULL),
       mBytesWritten(0),
       mSessionId(sessionId),
+      mUid(uid),
       mFlags(AUDIO_OUTPUT_FLAG_NONE) {
     ALOGV("AudioOutput(%d)", sessionId);
     mStreamType = AUDIO_STREAM_MUSIC;
@@ -1376,10 +1389,12 @@ uint32_t MediaPlayerService::AudioOutput::latency () const
     return mTrack->latency();
 }
 
+#ifdef QCOM_HARDWARE
 audio_stream_type_t MediaPlayerService::AudioOutput::streamType () const
 {
     return mStreamType;
 }
+#endif
 
 float MediaPlayerService::AudioOutput::msecsPerFrame() const
 {
@@ -1392,6 +1407,7 @@ status_t MediaPlayerService::AudioOutput::getPosition(uint32_t *position) const
     return mTrack->getPosition(position);
 }
 
+#ifdef QCOM_HARDWARE
 ssize_t MediaPlayerService::AudioOutput::sampleRate() const
 {
     if (mTrack == 0) return NO_INIT;
@@ -1405,6 +1421,7 @@ status_t MediaPlayerService::AudioOutput::getTimeStamp(uint64_t *tstamp)
     mTrack->getTimeStamp(tstamp);
     return NO_ERROR;
 }
+#endif
 
 status_t MediaPlayerService::AudioOutput::getFramesWritten(uint32_t *frameswritten) const
 {
@@ -1461,6 +1478,7 @@ status_t MediaPlayerService::AudioOutput::open(
 {
     mCallback = cb;
     mCallbackCookie = cookie;
+#ifdef QCOM_HARDWARE
     if (flags & AUDIO_OUTPUT_FLAG_LPA || flags & AUDIO_OUTPUT_FLAG_TUNNEL) {
         ALOGV("AudioOutput open: with flags %x",flags);
         channelMask = audio_channel_out_mask_from_count(channelCount);
@@ -1503,6 +1521,8 @@ status_t MediaPlayerService::AudioOutput::open(
         mTrack = audioTrack;
         return NO_ERROR;
     }
+#endif
+
     // Check argument "bufferCount" against the mininum buffer count
     if (bufferCount < mMinBufferCount) {
         ALOGD("bufferCount (%d) is too small and increased to %d", bufferCount, mMinBufferCount);
@@ -1613,7 +1633,8 @@ status_t MediaPlayerService::AudioOutput::open(
                     0,  // notification frames
                     mSessionId,
                     AudioTrack::TRANSFER_CALLBACK,
-                    offloadInfo);
+                    offloadInfo,
+                    mUid);
         } else {
             t = new AudioTrack(
                     mStreamType,
@@ -1622,10 +1643,13 @@ status_t MediaPlayerService::AudioOutput::open(
                     channelMask,
                     frameCount,
                     flags,
-                    NULL,
-                    NULL,
-                    0,
-                    mSessionId);
+                    NULL, // callback
+                    NULL, // user data
+                    0, // notification frames
+                    mSessionId,
+                    AudioTrack::TRANSFER_DEFAULT,
+                    NULL, // offload info
+                    mUid);
         }
 
         if ((t == 0) || (t->initCheck() != NO_ERROR)) {
@@ -1731,6 +1755,9 @@ void MediaPlayerService::AudioOutput::switchToNextOutput() {
 
 ssize_t MediaPlayerService::AudioOutput::write(const void* buffer, size_t size)
 {
+#ifndef QCOM_HARDWARE
+    LOG_FATAL_IF(mCallback != NULL, "Don't call write if supplying a callback.");
+#endif
 
     //ALOGV("write(%p, %u)", buffer, size);
     if (mTrack != 0) {
@@ -1762,7 +1789,11 @@ void MediaPlayerService::AudioOutput::pause()
 void MediaPlayerService::AudioOutput::close()
 {
     ALOGV("close");
+#ifdef QCOM_HARDWARE
     if (mTrack != 0) mTrack.clear();
+#else
+    mTrack.clear();
+#endif
 }
 
 void MediaPlayerService::AudioOutput::setVolume(float left, float right)
@@ -1815,6 +1846,7 @@ status_t MediaPlayerService::AudioOutput::attachAuxEffect(int effectId)
 void MediaPlayerService::AudioOutput::CallbackWrapper(
         int event, void *cookie, void *info) {
     //ALOGV("callbackwrapper");
+#ifdef QCOM_HARDWARE
     if (event == AudioTrack::EVENT_UNDERRUN) {
         ALOGW("Event underrun");
         CallbackData *data = (CallbackData*)cookie;
@@ -1854,6 +1886,7 @@ void MediaPlayerService::AudioOutput::CallbackWrapper(
         return;
     }
     if (event == AudioTrack::EVENT_MORE_DATA) {
+#endif
         CallbackData *data = (CallbackData*)cookie;
         data->lock();
         AudioOutput *me = data->getOutput();
@@ -1903,7 +1936,9 @@ void MediaPlayerService::AudioOutput::CallbackWrapper(
         }
 
         data->unlock();
+#ifdef QCOM_HARDWARE
     }
+#endif
 
     return;
 }
@@ -1938,10 +1973,12 @@ status_t MediaPlayerService::AudioCache::getPosition(uint32_t *position) const
     return NO_ERROR;
 }
 
+#ifdef QCOM_HARDWARE
 ssize_t MediaPlayerService::AudioCache::sampleRate() const
 {
     return mSampleRate;
 }
+#endif
 
 status_t MediaPlayerService::AudioCache::getFramesWritten(uint32_t *written) const
 {

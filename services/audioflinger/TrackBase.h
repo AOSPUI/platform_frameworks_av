@@ -43,9 +43,12 @@ public:
                                 audio_format_t format,
                                 audio_channel_mask_t channelMask,
                                 size_t frameCount,
+#ifdef QCOM_HARDWARE
                                 uint32_t flags,
+#endif
                                 const sp<IMemory>& sharedBuffer,
                                 int sessionId,
+                                int uid,
                                 bool isOut);
     virtual             ~TrackBase();
 
@@ -55,6 +58,7 @@ public:
             sp<IMemory> getCblk() const { return mCblkMemory; }
             audio_track_cblk_t* cblk() const { return mCblk; }
             int         sessionId() const { return mSessionId; }
+            int         uid() const { return mUid; }
     virtual status_t    setSyncEvent(const sp<SyncEvent>& event);
 
 protected:
@@ -131,8 +135,11 @@ protected:
                                     // 8-bit PCM samples are stored as 16-bit
     const size_t        mFrameCount;// size of track buffer given at createTrack() or
                                     // openRecord(), and then adjusted as needed
+#ifdef QCOM_HARDWARE
     uint32_t            mFlags;
+#endif
     const int           mSessionId;
+    int                 mUid;
     Vector < sp<SyncEvent> >mSyncEvents;
     const bool          mIsOut;
     ServerProxy*        mServerProxy;

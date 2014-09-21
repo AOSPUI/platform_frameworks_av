@@ -486,6 +486,7 @@ status_t MediaPlayer::reset_l()
         }
         // setDataSource has to be called again to create a
         // new mediaplayer.
+        mPlayer->disconnect();
         mPlayer = 0;
         return ret;
     }
@@ -683,7 +684,11 @@ void MediaPlayer::notify(int msg, int ext1, int ext2, const Parcel *obj)
     }
 
     // Allows calls from JNI in idle state to notify errors
+#ifdef QCOM_HARDWARE
     if (!((msg == MEDIA_ERROR || msg == MEDIA_QOE) && mCurrentState == MEDIA_PLAYER_IDLE) && mPlayer == 0) {
+#else
+    if (!(msg == MEDIA_ERROR && mCurrentState == MEDIA_PLAYER_IDLE) && mPlayer == 0) {
+#endif
         ALOGV("notify(%d, %d, %d) callback on disconnected mediaplayer", msg, ext1, ext2);
         if (locked) mLock.unlock();   // release the lock when done.
         return;
@@ -758,9 +763,11 @@ void MediaPlayer::notify(int msg, int ext1, int ext2, const Parcel *obj)
         break;
     case MEDIA_SUBTITLE_DATA:
         ALOGV("Received subtitle data message");
+#ifdef QCOM_HARDWARE
     case MEDIA_QOE:
         ALOGV("Received QOE Message for event : %d",ext2);
         break;
+#endif
     default:
         ALOGV("unrecognized message: (%d, %d, %d)", msg, ext1, ext2);
         break;
@@ -844,5 +851,12 @@ status_t MediaPlayer::updateProxyConfig(
 
     return INVALID_OPERATION;
 }
+
+#ifdef SAMSUNG_CAMERA_LEGACY
+extern "C" int _ZN7android11MediaPlayer18setAudioStreamTypeE19audio_stream_type_t();
+extern "C" int _ZN7android11MediaPlayer18setAudioStreamTypeEi() {
+    return _ZN7android11MediaPlayer18setAudioStreamTypeE19audio_stream_type_t();
+}
+#endif
 
 }; // namespace android

@@ -396,8 +396,8 @@ status_t ATSParser::Program::parseProgramMap(ABitReader *br) {
         }
 
         if (!success) {
-            ALOGI("Stream PIDs changed and we cannot recover.");
-            return ERROR_MALFORMED;
+            mStreams.clear();
+            ALOGI("Stream PIDs changed and we try to recover.");
         }
     }
 
@@ -1193,7 +1193,10 @@ status_t ATSParser::parseTS(ABitReader *br) {
     unsigned sync_byte = br->getBits(8);
     CHECK_EQ(sync_byte, 0x47u);
 
-    MY_LOGV("transport_error_indicator = %u", br->getBits(1));
+    if (br->getBits(1)) {  // transport_error_indicator
+        // silently ignore.
+        return OK;
+    }
 
     unsigned payload_unit_start_indicator = br->getBits(1);
     ALOGV("payload_unit_start_indicator = %u", payload_unit_start_indicator);

@@ -17,9 +17,12 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "StagefrightRecorder"
 #include <utils/Log.h>
+#ifdef QCOM_HARDWARE
 #include <media/AudioParameter.h>
+#endif
 #include "StagefrightRecorder.h"
 
+#include <binder/AppOpsManager.h>
 #include <binder/IPCThreadState.h>
 #include <binder/IServiceManager.h>
 
@@ -29,8 +32,10 @@
 #include <media/stagefright/AudioSource.h>
 #include <media/stagefright/AMRWriter.h>
 #include <media/stagefright/AACWriter.h>
+#ifdef QCOM_HARDWARE
 #include <media/stagefright/ExtendedWriter.h>
 #include <media/stagefright/WAVEWriter.h>
+#endif
 #include <media/stagefright/CameraSource.h>
 #include <media/stagefright/CameraSourceTimeLapse.h>
 #include <media/stagefright/MPEG2TSWriter.h>
@@ -44,14 +49,18 @@
 #include <camera/ICamera.h>
 #include <camera/CameraParameters.h>
 #include <gui/Surface.h>
+#ifdef QCOM_HARDWARE
 #include <utils/String8.h>
+#endif
 
 #include <utils/Errors.h>
 #include <sys/types.h>
 #include <ctype.h>
 #include <unistd.h>
 
+#ifdef QCOM_HARDWARE
 #include "ExtendedUtils.h"
+#endif
 #include <system/audio.h>
 #ifdef ENABLE_AV_ENHANCEMENTS
 #include <QCMediaDefs.h>
@@ -77,8 +86,9 @@ StagefrightRecorder::StagefrightRecorder()
       mOutputFd(-1),
       mAudioSource(AUDIO_SOURCE_CNT),
       mVideoSource(VIDEO_SOURCE_LIST_END),
-      mStarted(false), mSurfaceMediaSource(NULL),
-      mCaptureTimeLapse(false) {
+      mCaptureTimeLapse(false),
+      mStarted(false),
+      mSurfaceMediaSource(NULL) {
 
     ALOGV("Constructor");
     reset();
@@ -109,9 +119,11 @@ status_t StagefrightRecorder::setAudioSource(audio_source_t as) {
         ALOGE("Invalid audio source: %d", as);
         return BAD_VALUE;
     }
+#ifdef QCOM_HARDWARE
     if (ExtendedUtils::ShellProp::isAudioDisabled()) {
         return OK;
     }
+#endif
 
     if (as == AUDIO_SOURCE_DEFAULT) {
         mAudioSource = AUDIO_SOURCE_MIC;
@@ -163,16 +175,18 @@ status_t StagefrightRecorder::setAudioEncoder(audio_encoder ae) {
         ALOGE("Invalid audio encoder: %d", ae);
         return BAD_VALUE;
     }
-
+#ifdef QCOM_HARDWARE
     if (ExtendedUtils::ShellProp::isAudioDisabled()) {
         return OK;
     }
+#endif
     if (ae == AUDIO_ENCODER_DEFAULT) {
         mAudioEncoder = AUDIO_ENCODER_AMR_NB;
     } else {
         mAudioEncoder = ae;
     }
 
+#ifdef QCOM_HARDWARE
     if(mAudioEncoder == AUDIO_ENCODER_AAC) {
         mSampleRate = mSampleRate ? mSampleRate : 48000;
         mAudioChannels = mAudioChannels ? mAudioChannels : 2;
@@ -190,6 +204,7 @@ status_t StagefrightRecorder::setAudioEncoder(audio_encoder ae) {
         mAudioChannels = mAudioChannels ? mAudioChannels : 1;
         mAudioBitRate = mAudioBitRate ? mAudioBitRate : 12200;
     }
+#endif
     return OK;
 }
 
@@ -358,7 +373,11 @@ status_t StagefrightRecorder::setParamAudioSamplingRate(int32_t sampleRate) {
 
 status_t StagefrightRecorder::setParamAudioNumberOfChannels(int32_t channels) {
     ALOGV("setParamAudioNumberOfChannels: %d", channels);
+#ifdef QCOM_HARDWARE
     if (channels != 1 && channels != 2 && channels != 6) {
+#else
+    if (channels <= 0 || channels >= 3) {
+#endif
         ALOGE("Invalid number of audio channels: %d", channels);
         return BAD_VALUE;
     }
@@ -445,10 +464,12 @@ status_t StagefrightRecorder::setParamMaxFileSizeBytes(int64_t bytes) {
         ALOGW("Target file size (%lld bytes) is too small to be respected", bytes);
     }
 
+#ifdef QCOM_HARDWARE
     if (bytes >= 0xffffffffLL) {
         ALOGW("Target file size (%lld bytes) too larger than supported, clip to 4GB", bytes);
         bytes = 0xffffffffLL;
     }
+#endif
 
     mMaxFileSizeBytes = bytes;
     return OK;
@@ -773,6 +794,7 @@ status_t StagefrightRecorder::setClientName(const String16& clientName) {
 }
 
 status_t StagefrightRecorder::prepare() {
+#ifdef QCOM_HARDWARE
   ALOGV(" %s E", __func__ );
 
   if(mVideoSource != VIDEO_SOURCE_LIST_END && mVideoEncoder != VIDEO_ENCODER_LIST_END && mVideoHeight && mVideoWidth &&             /*Video recording*/
@@ -784,6 +806,7 @@ status_t StagefrightRecorder::prepare() {
     setParam64BitFileOffset(true);
   }
   ALOGV(" %s X", __func__ );
+#endif
   return OK;
 }
 
@@ -829,9 +852,11 @@ status_t StagefrightRecorder::start() {
             status = startExtendedRecording( );
             break;
 #endif
+#ifdef QCOM_HARDWARE
         case OUTPUT_FORMAT_WAVE:
             status = startWAVERecording( );
             break;
+#endif
         default:
             ALOGE("Unsupported output file format: %d", mOutputFormat);
             status = UNKNOWN_ERROR;
@@ -856,8 +881,17 @@ status_t StagefrightRecorder::start() {
 }
 
 sp<MediaSource> StagefrightRecorder::createAudioSource() {
+#ifdef QCOM_HARDWARE
     bool tunneledSource = false;
+    int32_t res;
     const char *tunnelMime;
+
+    //check permissions
+    res = mAppOpsManager.noteOp(AppOpsManager::OP_RECORD_AUDIO, mClientUid, mClientName);
+    if (res != AppOpsManager::MODE_ALLOWED) {
+        return NULL;
+    }
+
     {
         AudioParameter param;
         String8 key("tunneled-input-formats");
@@ -902,6 +936,7 @@ sp<MediaSource> StagefrightRecorder::createAudioSource() {
         audioSource = new AudioSource( mAudioSource, meta);
         return audioSource->initCheck( ) == OK ? audioSource : NULL;
     }
+#endif
     sp<AudioSource> audioSource =
         new AudioSource(
                 mAudioSource,
@@ -918,9 +953,11 @@ sp<MediaSource> StagefrightRecorder::createAudioSource() {
     sp<MetaData> encMeta = new MetaData;
     const char *mime;
     switch (mAudioEncoder) {
+#ifdef QCOM_HARDWARE
         case AUDIO_ENCODER_LPCM:
             mime = MEDIA_MIMETYPE_AUDIO_RAW;
             break;
+#endif
         case AUDIO_ENCODER_AMR_NB:
         case AUDIO_ENCODER_DEFAULT:
             mime = MEDIA_MIMETYPE_AUDIO_AMR_NB;
@@ -984,6 +1021,7 @@ sp<MediaSource> StagefrightRecorder::createAudioSource() {
         OMXCodec::Create(client.interface(), encMeta,
                          true /* createEncoder */, audioSource);
 #endif
+#ifdef QCOM_HARDWARE
     if (audioEncoder == NULL) {
         ALOGD("No encoder is needed, use the AudioSource directly as the MediaSource for LPCM format");
         audioEncoder = audioSource;
@@ -991,6 +1029,7 @@ sp<MediaSource> StagefrightRecorder::createAudioSource() {
     if (mAudioSourceNode != NULL) {
         mAudioSourceNode.clear();
     }
+#endif
     mAudioSourceNode = audioSource;
 
     return audioEncoder;
@@ -1027,29 +1066,35 @@ status_t StagefrightRecorder::startAMRRecording() {
                     mAudioEncoder);
             return BAD_VALUE;
         }
+#ifdef QCOM_HARDWARE
         if (mSampleRate != 8000) {
             ALOGE("Invalid sampling rate %d used for AMRNB recording",
                     mSampleRate);
             return BAD_VALUE;
         }
+#endif
     } else {  // mOutputFormat must be OUTPUT_FORMAT_AMR_WB
         if (mAudioEncoder != AUDIO_ENCODER_AMR_WB) {
             ALOGE("Invlaid encoder %d used for AMRWB recording",
                     mAudioEncoder);
             return BAD_VALUE;
         }
+#ifdef QCOM_HARDWARE
         if (mSampleRate != 16000) {
             ALOGE("Invalid sample rate %d used for AMRWB recording",
                     mSampleRate);
             return BAD_VALUE;
         }
+#endif
     }
 
+#ifdef QCOM_HARDWARE
     if (mAudioChannels != 1) {
         ALOGE("Invalid number of audio channels %d used for amr recording",
                 mAudioChannels);
         return BAD_VALUE;
     }
+#endif
     mWriter = new AMRWriter(mOutputFd);
     status_t status = startRawAudioRecording();
     if (status != OK) {
@@ -1058,6 +1103,7 @@ status_t StagefrightRecorder::startAMRRecording() {
     }
     return status;
 }
+#ifdef QCOM_HARDWARE
 status_t StagefrightRecorder::startWAVERecording() {
     CHECK(mOutputFormat == OUTPUT_FORMAT_WAVE);
     CHECK(mAudioEncoder == AUDIO_ENCODER_LPCM);
@@ -1070,6 +1116,7 @@ status_t StagefrightRecorder::startWAVERecording() {
     }
     return status;
 }
+#endif
 
 status_t StagefrightRecorder::startRawAudioRecording() {
     if (mAudioSource >= AUDIO_SOURCE_CNT) {
@@ -1246,7 +1293,22 @@ void StagefrightRecorder::clipVideoFrameWidth() {
     }
 }
 
-status_t StagefrightRecorder::checkVideoEncoderCapabilities() {
+status_t StagefrightRecorder::checkVideoEncoderCapabilities(
+        bool *supportsCameraSourceMetaDataMode) {
+    /* hardware codecs must support camera source meta data mode */
+    Vector<CodecCapabilities> codecs;
+    OMXClient client;
+    CHECK_EQ(client.connect(), (status_t)OK);
+    QueryCodecs(
+            client.interface(),
+            (mVideoEncoder == VIDEO_ENCODER_H263 ? MEDIA_MIMETYPE_VIDEO_H263 :
+             mVideoEncoder == VIDEO_ENCODER_MPEG_4_SP ? MEDIA_MIMETYPE_VIDEO_MPEG4 :
+             mVideoEncoder == VIDEO_ENCODER_H264 ? MEDIA_MIMETYPE_VIDEO_AVC : ""),
+            false /* decoder */, true /* hwCodec */, &codecs);
+    *supportsCameraSourceMetaDataMode = codecs.size() > 0;
+    ALOGV("encoder %s camera source meta-data mode",
+            *supportsCameraSourceMetaDataMode ? "supports" : "DOES NOT SUPPORT");
+
     if (!mCaptureTimeLapse) {
         // Dont clip for time lapse capture as encoder will have enough
         // time to encode because of slow capture rate of time lapse.
@@ -1464,7 +1526,9 @@ status_t StagefrightRecorder::setupSurfaceMediaSource() {
 status_t StagefrightRecorder::setupCameraSource(
         sp<CameraSource> *cameraSource) {
     status_t err = OK;
-    if ((err = checkVideoEncoderCapabilities()) != OK) {
+    bool encoderSupportsCameraSourceMetaDataMode;
+    if ((err = checkVideoEncoderCapabilities(
+                &encoderSupportsCameraSourceMetaDataMode)) != OK) {
         return err;
     }
     Size videoSize;
@@ -1480,13 +1544,14 @@ status_t StagefrightRecorder::setupCameraSource(
         mCameraSourceTimeLapse = CameraSourceTimeLapse::CreateFromCamera(
                 mCamera, mCameraProxy, mCameraId, mClientName, mClientUid,
                 videoSize, mFrameRate, mPreviewSurface,
-                mTimeBetweenTimeLapseFrameCaptureUs);
+                mTimeBetweenTimeLapseFrameCaptureUs,
+                encoderSupportsCameraSourceMetaDataMode);
         *cameraSource = mCameraSourceTimeLapse;
     } else {
         *cameraSource = CameraSource::CreateFromCamera(
                 mCamera, mCameraProxy, mCameraId, mClientName, mClientUid,
                 videoSize, mFrameRate,
-                mPreviewSurface, true /*storeMetaDataInVideoBuffers*/);
+                mPreviewSurface, encoderSupportsCameraSourceMetaDataMode);
     }
     mCamera.clear();
     mCameraProxy.clear();
@@ -1566,6 +1631,7 @@ status_t StagefrightRecorder::setupVideoEncoder(
         enc_meta->setInt32(kKeyTimeScale, mVideoTimeScale);
     }
 
+#ifdef QCOM_HARDWARE
     status_t retVal = ExtendedUtils::HFR::reCalculateFileDuration(
             meta, enc_meta, mMaxFileDurationUs, mFrameRate, mVideoEncoder);
     if(retVal != OK) {
@@ -1573,6 +1639,7 @@ status_t StagefrightRecorder::setupVideoEncoder(
     }
 
     ExtendedUtils::ShellProp::setEncoderProfile(mVideoEncoder, mVideoEncoderProfile);
+#endif
 
     if (mVideoEncoderProfile != -1) {
         enc_meta->setInt32(kKeyVideoProfile, mVideoEncoderProfile);
@@ -1587,6 +1654,10 @@ status_t StagefrightRecorder::setupVideoEncoder(
     uint32_t encoder_flags = 0;
     if (mIsMetaDataStoredInVideoBuffers) {
         encoder_flags |= OMXCodec::kStoreMetaDataInVideoBuffers;
+#ifdef USE_SUBMIT_ONE_INPUT_BUFFER
+        ALOGW("msm7627 family of chipsets supports, only one buffer at a time");
+        encoder_flags |= OMXCodec::kOnlySubmitOneInputBufferAtOneTime;
+#endif
     }
 
     // Do not wait for all the input buffers to become available.
@@ -1626,7 +1697,9 @@ status_t StagefrightRecorder::setupAudioEncoder(const sp<MediaWriter>& writer) {
         case AUDIO_ENCODER_AAC:
         case AUDIO_ENCODER_HE_AAC:
         case AUDIO_ENCODER_AAC_ELD:
+#ifdef QCOM_HARDWARE
         case AUDIO_ENCODER_LPCM:
+#endif
             break;
 
         default:
@@ -1788,10 +1861,12 @@ status_t StagefrightRecorder::stop() {
         ::close(mOutputFd);
         mOutputFd = -1;
     }
+#ifdef QCOM_HARDWARE
     if (mAudioSourceNode != NULL) {
         mAudioSourceNode.clear();
         mAudioSourceNode = NULL;
     }
+#endif
 
     if (mStarted) {
         mStarted = false;
@@ -1834,9 +1909,15 @@ status_t StagefrightRecorder::reset() {
     mVideoHeight   = 144;
     mFrameRate     = -1;
     mVideoBitRate  = 192000;
+#ifdef QCOM_HARDWARE
     mSampleRate    = 0;
     mAudioChannels = 0;
     mAudioBitRate  = 0;
+#else
+    mSampleRate    = 8000;
+    mAudioChannels = 1;
+    mAudioBitRate  = 12200;
+#endif
     mInterleaveDurationUs = 0;
     mIFramesIntervalSec = 1;
     mAudioSourceNode = 0;

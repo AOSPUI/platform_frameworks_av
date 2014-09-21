@@ -463,8 +463,19 @@ void ExtendedUtils::helper_addMediaCodec(Vector<MediaCodecList::CodecInfo> &mCod
     MediaCodecList::CodecInfo *info = &mCodecInfos.editItemAt(mCodecInfos.size() - 1);
     info->mName = name;
     info->mIsEncoder = encoder;
+    info->mTypes=0;
     ssize_t index = mTypes.indexOfKey(type);
-    uint32_t bit = mTypes.valueAt(index);
+    uint32_t bit;
+    if(index < 0) {
+         bit = mTypes.size();
+         if (bit == 32) {
+             ALOGW("Too many distinct type names in configuration.");
+             return;
+         }
+         mTypes.add(name, bit);
+    } else {
+        bit = mTypes.valueAt(index);
+    }
     info->mTypes |= 1ul << bit;
     info->mQuirks = quirks;
 }
@@ -614,13 +625,13 @@ sp<MediaExtractor> ExtendedUtils::MediaExtractor_CreateIfNeeded(sp<MediaExtracto
                    return defaultExt;
 }
 
-void QCUtils::helper_addMediaCodec(Vector<MediaCodecList::CodecInfo> &mCodecInfos,
+void ExtendedUtils::helper_addMediaCodec(Vector<MediaCodecList::CodecInfo> &mCodecInfos,
                                           KeyedVector<AString, size_t> &mTypes,
                                           bool encoder, const char *name,
                                           const char *type, uint32_t quirks) {
 }
 
-uint32_t QCUtils::helper_getCodecSpecificQuirks(KeyedVector<AString, size_t> &mCodecQuirks,
+uint32_t ExtendedUtils::helper_getCodecSpecificQuirks(KeyedVector<AString, size_t> &mCodecQuirks,
                                                        Vector<AString> quirks) {
     return 0;
 }

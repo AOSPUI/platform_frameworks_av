@@ -75,7 +75,9 @@ enum {
     GET_PRIMARY_OUTPUT_SAMPLING_RATE,
     GET_PRIMARY_OUTPUT_FRAME_COUNT,
     SET_LOW_RAM_DEVICE,
+#ifdef QCOM_HARDWARE
     CREATE_DIRECT_TRACK,
+#endif
 };
 
 class BpAudioFlinger : public BpInterface<IAudioFlinger>
@@ -98,6 +100,7 @@ public:
                                 pid_t tid,
                                 int *sessionId,
                                 String8& name,
+                                int clientUid,
                                 status_t *status)
     {
         Parcel data, reply;
@@ -123,6 +126,7 @@ public:
             lSessionId = *sessionId;
         }
         data.writeInt32(lSessionId);
+        data.writeInt32(clientUid);
         status_t lStatus = remote()->transact(CREATE_TRACK, data, &reply);
         if (lStatus != NO_ERROR) {
             ALOGE("createTrack error: %s", strerror(-lStatus));
@@ -145,6 +149,7 @@ public:
         return track;
     }
 
+#ifdef QCOM_HARDWARE
     virtual sp<IDirectTrack> createDirectTrack(
                                 pid_t pid,
                                 uint32_t sampleRate,
@@ -185,6 +190,7 @@ public:
         }
         return track;
     }
+#endif
 
     virtual sp<IAudioRecord> openRecord(
                                 audio_io_handle_t input,
@@ -805,6 +811,7 @@ status_t BnAudioFlinger::onTransact(
             audio_io_handle_t output = (audio_io_handle_t) data.readInt32();
             pid_t tid = (pid_t) data.readInt32();
             int sessionId = data.readInt32();
+            int clientUid = data.readInt32();
             String8 name;
             status_t status;
             sp<IAudioTrack> track;
@@ -816,7 +823,7 @@ status_t BnAudioFlinger::onTransact(
                 track = createTrack(
                         (audio_stream_type_t) streamType, sampleRate, format,
                         channelMask, frameCount, &flags, buffer, output, tid,
-                        &sessionId, name, &status);
+                        &sessionId, name, clientUid, &status);
             }
             reply->writeInt32(flags);
             reply->writeInt32(sessionId);
@@ -825,6 +832,7 @@ status_t BnAudioFlinger::onTransact(
             reply->writeStrongBinder(track->asBinder());
             return NO_ERROR;
         } break;
+#ifdef QCOM_HARDWARE
         case CREATE_DIRECT_TRACK: {
             CHECK_INTERFACE(IAudioFlinger, data, reply);
             pid_t pid = data.readInt32();
@@ -843,6 +851,7 @@ status_t BnAudioFlinger::onTransact(
             reply->writeStrongBinder(track->asBinder());
             return NO_ERROR;
         } break;
+#endif
         case OPEN_RECORD: {
             CHECK_INTERFACE(IAudioFlinger, data, reply);
             audio_io_handle_t input = (audio_io_handle_t) data.readInt32();
