@@ -1,8 +1,5 @@
 /*
 **
-** Copyright (c) 2013, The Linux Foundation. All rights reserved.
-** Not a Contribution.
-**
 ** Copyright 2008, The Android Open Source Project
 **
 ** Licensed under the Apache License, Version 2.0 (the "License");
@@ -75,7 +72,7 @@ class MediaPlayerService : public BnMediaPlayerService
         class CallbackData;
 
      public:
-                                AudioOutput(int sessionId);
+                                AudioOutput(int sessionId, int uid);
         virtual                 ~AudioOutput();
 
         virtual bool            ready() const { return mTrack != 0; }
@@ -85,7 +82,6 @@ class MediaPlayerService : public BnMediaPlayerService
         virtual ssize_t         channelCount() const;
         virtual ssize_t         frameSize() const;
         virtual uint32_t        latency() const;
-        virtual audio_stream_type_t streamType() const;
         virtual float           msecsPerFrame() const;
         virtual status_t        getPosition(uint32_t *position) const;
         virtual status_t        getFramesWritten(uint32_t *frameswritten) const;
@@ -104,7 +100,10 @@ class MediaPlayerService : public BnMediaPlayerService
         virtual void            flush();
         virtual void            pause();
         virtual void            close();
-                void            setAudioStreamType(audio_stream_type_t streamType) { mStreamType = streamType; }
+                void            setAudioStreamType(audio_stream_type_t streamType) {
+                                                                        mStreamType = streamType; }
+        virtual audio_stream_type_t getAudioStreamType() const { return mStreamType; }
+
                 void            setVolume(float left, float right);
         virtual status_t        setPlaybackRatePermille(int32_t ratePermille);
                 status_t        setAuxEffectSendLevel(float level);
@@ -116,12 +115,8 @@ class MediaPlayerService : public BnMediaPlayerService
                 void            setNextOutput(const sp<AudioOutput>& nextOutput);
                 void            switchToNextOutput();
         virtual bool            needsTrailingPadding() { return mNextOutput == NULL; }
-
         virtual status_t        setParameters(const String8& keyValuePairs);
         virtual String8         getParameters(const String8& keys);
-
-        virtual ssize_t         sampleRate() const;
-        virtual status_t        getTimeStamp(uint64_t *tstamp);
 
     private:
         static void             setMinBufferCount();
@@ -143,6 +138,7 @@ class MediaPlayerService : public BnMediaPlayerService
         uint32_t                mSampleRateHz; // sample rate of the content, as set in open()
         float                   mMsecsPerFrame;
         int                     mSessionId;
+        int                     mUid;
         float                   mSendLevel;
         int                     mAuxEffectId;
         static bool             mIsOnEmulator;
@@ -214,8 +210,12 @@ class MediaPlayerService : public BnMediaPlayerService
         virtual void            pause() {}
         virtual void            close() {}
                 void            setAudioStreamType(audio_stream_type_t streamType) {}
+                // stream type is not used for AudioCache
+        virtual audio_stream_type_t getAudioStreamType() const { return AUDIO_STREAM_DEFAULT; }
+
                 void            setVolume(float left, float right) {}
         virtual status_t        setPlaybackRatePermille(int32_t ratePermille) { return INVALID_OPERATION; }
+                uint32_t        sampleRate() const { return mSampleRate; }
                 audio_format_t  format() const { return mFormat; }
                 size_t          size() const { return mSize; }
                 status_t        wait();
@@ -225,7 +225,6 @@ class MediaPlayerService : public BnMediaPlayerService
         static  void            notify(void* cookie, int msg,
                                        int ext1, int ext2, const Parcel *obj);
         virtual status_t        dump(int fd, const Vector<String16>& args) const;
-        virtual ssize_t         sampleRate() const;
 
     private:
                                 AudioCache();

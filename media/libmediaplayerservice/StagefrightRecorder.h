@@ -135,12 +135,12 @@ private:
     status_t startMPEG4Recording();
     status_t startAMRRecording();
     status_t startAACRecording();
-    status_t startWAVERecording();
     status_t startRawAudioRecording();
     status_t startRTPRecording();
     status_t startMPEG2TSRecording();
     sp<MediaSource> createAudioSource();
-    status_t checkVideoEncoderCapabilities();
+    status_t checkVideoEncoderCapabilities(
+            bool *supportsCameraSourceMetaDataMode);
     status_t checkAudioEncoderCapabilities();
     // Generic MediaSource set-up. Returns the appropriate
     // source (CameraSource or SurfaceMediaSource)
@@ -191,9 +191,6 @@ private:
 
     StagefrightRecorder(const StagefrightRecorder &);
     StagefrightRecorder &operator=(const StagefrightRecorder &);
-#ifdef ENABLE_AV_ENHANCEMENTS
-    status_t startExtendedRecording();
-#endif
 };
 
 }  // namespace android

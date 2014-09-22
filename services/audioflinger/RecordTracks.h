@@ -28,8 +28,8 @@ public:
                                 audio_format_t format,
                                 audio_channel_mask_t channelMask,
                                 size_t frameCount,
-                                uint32_t flags,
-                                int sessionId);
+                                int sessionId,
+                                int uid);
     virtual             ~RecordTrack();
 
     virtual status_t    start(AudioSystem::sync_event_t event, int triggerSession);
@@ -58,7 +58,6 @@ private:
                                    int64_t pts = kInvalidPTS);
     // releaseBuffer() not overridden
 
-    track_flags_t       mFlags;
     bool                mOverflow;  // overflow on most recent attempt to fill client buffer
     AudioRecordServerProxy* mAudioRecordServerProxy;
 };

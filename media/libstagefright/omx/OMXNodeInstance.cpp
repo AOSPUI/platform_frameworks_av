@@ -243,13 +243,18 @@ status_t OMXNodeInstance::freeNode(OMXMaster *master) {
 status_t OMXNodeInstance::sendCommand(
         OMX_COMMANDTYPE cmd, OMX_S32 param) {
     const sp<GraphicBufferSource>& bufferSource(getGraphicBufferSource());
-    if (bufferSource != NULL
-            && cmd == OMX_CommandStateSet
-            && param == OMX_StateLoaded) {
-        // Initiating transition from Executing -> Loaded
-        // Buffers are about to be freed.
-        bufferSource->omxLoaded();
-        setGraphicBufferSource(NULL);
+    if (bufferSource != NULL && cmd == OMX_CommandStateSet) {
+        if (param == OMX_StateIdle) {
+            // Initiating transition from Executing -> Idle
+            // ACodec is waiting for all buffers to be returned, do NOT
+            // submit any more buffers to the codec.
+            bufferSource->omxIdle();
+        } else if (param == OMX_StateLoaded) {
+            // Initiating transition from Idle/Executing -> Loaded
+            // Buffers are about to be freed.
+            bufferSource->omxLoaded();
+            setGraphicBufferSource(NULL);
+        }
 
         // fall through
     }
@@ -759,20 +764,15 @@ status_t OMXNodeInstance::freeBuffer(
         OMX_U32 portIndex, OMX::buffer_id buffer) {
     Mutex::Autolock autoLock(mLock);
 
+    removeActiveBuffer(portIndex, buffer);
+
     OMX_BUFFERHEADERTYPE *header = (OMX_BUFFERHEADERTYPE *)buffer;
     BufferMeta *buffer_meta = static_cast<BufferMeta *>(header->pAppPrivate);
 
     OMX_ERRORTYPE err = OMX_FreeBuffer(mHandle, portIndex, header);
 
-    if (err != OMX_ErrorNone) {
-        ALOGW("OMX_FreeBuffer failed w/ err %x, do not remove from active buffer list", err);
-    } else {
-        ALOGI("OMX_FreeBuffer for buffer header %p successful", header);
-        removeActiveBuffer(portIndex, buffer);
-
-        delete buffer_meta;
-        buffer_meta = NULL;
-    }
+    delete buffer_meta;
+    buffer_meta = NULL;
 
     return StatusFromOMXError(err);
 }

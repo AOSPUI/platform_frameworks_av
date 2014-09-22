@@ -32,14 +32,12 @@
 #include <media/stagefright/NativeWindowWrapper.h>
 #include <media/stagefright/OMXClient.h>
 #include <media/stagefright/OMXCodec.h>
-#include <media/stagefright/ExtendedCodec.h>
 
 #include <media/hardware/HardwareAPI.h>
 
 #include <OMX_Component.h>
-#include <media/stagefright/ExtendedCodec.h>
+
 #include "include/avc_utils.h"
-#include "include/ExtendedUtils.h"
 
 namespace android {
 
@@ -372,8 +370,7 @@ ACodec::ACodec()
       mDequeueCounter(0),
       mStoreMetaDataInOutputBuffers(false),
       mMetaDataBuffersToSubmit(0),
-      mRepeatFrameDelayUs(-1ll),
-      mInSmoothStreamingMode(false) {
+      mRepeatFrameDelayUs(-1ll) {
     mUninitializedState = new UninitializedState(this);
     mLoadedState = new LoadedState(this);
     mLoadedToIdleState = new LoadedToIdleState(this);
@@ -453,6 +450,18 @@ void ACodec::initiateShutdown(bool keepComponentAllocated) {
 
 void ACodec::signalRequestIDRFrame() {
     (new AMessage(kWhatRequestIDRFrame, id()))->post();
+}
+
+// *** NOTE: THE FOLLOWING WORKAROUND WILL BE REMOVED ***
+// Some codecs may return input buffers before having them processed.
+// This causes a halt if we already signaled an EOS on the input
+// port.  For now keep submitting an output buffer if there was an
+// EOS on the input port, but not yet on the output port.
+void ACodec::signalSubmitOutputMetaDataBufferIfEOS_workaround() {
+    if (mPortEOS[kPortIndexInput] && !mPortEOS[kPortIndexOutput] &&
+            mMetaDataBuffersToSubmit > 0) {
+        (new AMessage(kWhatSubmitOutputMetaDataBufferIfEOS, id()))->post();
+    }
 }
 
 status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
@@ -944,10 +953,6 @@ status_t ACodec::setComponentRole(
             "audio_decoder.amrnb", "audio_encoder.amrnb" },
         { MEDIA_MIMETYPE_AUDIO_AMR_WB,
             "audio_decoder.amrwb", "audio_encoder.amrwb" },
-#ifdef ENABLE_QC_AV_ENHANCEMENTS
-        { MEDIA_MIMETYPE_AUDIO_AMR_WB_PLUS,
-            "audio_decoder.amrwbplus", "audio_encoder.amrwbplus" },
-#endif
         { MEDIA_MIMETYPE_AUDIO_AAC,
             "audio_decoder.aac", "audio_encoder.aac" },
         { MEDIA_MIMETYPE_AUDIO_VORBIS,
@@ -985,7 +990,7 @@ status_t ACodec::setComponentRole(
     }
 
     if (i == kNumMimeToRole) {
-        return ExtendedCodec::setSupportedRole(mOMX, mNode, isEncoder, mime);
+        return ERROR_UNSUPPORTED;
     }
 
     const char *role =
@@ -1181,10 +1186,6 @@ status_t ACodec::configureCodec(
                 err = setupVideoDecoder(mime, width, height);
             }
         }
-        if (err == OK) {
-            const char* componentName = mComponentName.c_str();
-            ExtendedCodec::configureVideoDecoder(msg, mime, mOMX, 0, mNode, componentName);
-        }
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEG)) {
         int32_t numChannels, sampleRate;
         if (!msg->findInt32("channel-count", &numChannels)
@@ -1267,19 +1268,6 @@ status_t ACodec::configureCodec(
         } else {
             err = setupRawAudioFormat(kPortIndexInput, sampleRate, numChannels);
         }
-    } else {
-        if (encoder) {
-            int32_t numChannels, sampleRate;
-            if (msg->findInt32("channel-count", &numChannels)
-                  && msg->findInt32("sample-rate", &sampleRate)) {
-                setupRawAudioFormat(kPortIndexInput, sampleRate, numChannels);
-            }
-       }
-       err = ExtendedCodec::setAudioFormat(
-                 msg, mime, mOMX, mNode, mIsEncoder);
-       if(err != OK) {
-           return err;
-       }
     }
 
     if (err != OK) {
@@ -1758,9 +1746,7 @@ status_t ACodec::setupVideoDecoder(
     status_t err = GetVideoCodingTypeFromMime(mime, &compressionFormat);
 
     if (err != OK) {
-        err = ExtendedCodec::setVideoOutputFormat(mime, &compressionFormat);
-        if (err != OK)
-            return err;
+        return err;
     }
 
     err = setVideoPortFormatType(
@@ -1789,9 +1775,6 @@ status_t ACodec::setupVideoDecoder(
     if (err != OK) {
         return err;
     }
-
-    ExtendedCodec::enableSmoothStreaming(
-            mOMX, mNode, &mInSmoothStreamingMode, mComponentName.c_str());
 
     return OK;
 }
@@ -1886,11 +1869,7 @@ status_t ACodec::setupVideoEncoder(const char *mime, const sp<AMessage> &msg) {
     err = GetVideoCodingTypeFromMime(mime, &compressionFormat);
 
     if (err != OK) {
-        err = ExtendedCodec::setVideoInputFormat(mime, &compressionFormat);
-        if (err != OK) {
-            ALOGE("Not a supported video mime type: %s", mime);
-            return err;
-        }
+        return err;
     }
 
     err = setVideoPortFormatType(
@@ -1940,6 +1919,11 @@ status_t ACodec::setupVideoEncoder(const char *mime, const sp<AMessage> &msg) {
 
         case OMX_VIDEO_CodingAVC:
             err = setupAVCEncoderParameters(msg);
+            break;
+
+        case OMX_VIDEO_CodingVP8:
+        case OMX_VIDEO_CodingVP9:
+            err = setupVPXEncoderParameters(msg);
             break;
 
         default:
@@ -2273,6 +2257,17 @@ status_t ACodec::setupAVCEncoderParameters(const sp<AMessage> &msg) {
     return configureBitrate(bitrate, bitrateMode);
 }
 
+status_t ACodec::setupVPXEncoderParameters(const sp<AMessage> &msg) {
+    int32_t bitrate;
+    if (!msg->findInt32("bitrate", &bitrate)) {
+        return INVALID_OPERATION;
+    }
+
+    OMX_VIDEO_CONTROLRATETYPE bitrateMode = getBitrateMode(msg);
+
+    return configureBitrate(bitrate, bitrateMode);
+}
+
 status_t ACodec::verifySupportForProfileAndLevel(
         int32_t profile, int32_t level) {
     OMX_VIDEO_PARAM_PROFILELEVELTYPE params;
@@ -2554,9 +2549,6 @@ void ACodec::sendFormatChange(const sp<AMessage> &reply) {
                             rect.nTop,
                             rect.nLeft + rect.nWidth,
                             rect.nTop + rect.nHeight);
-                    reply->setInt32(
-                            "color-format",
-                            (int)(videoDef->eColorFormat));
                 }
             }
             break;
@@ -2673,24 +2665,7 @@ void ACodec::sendFormatChange(const sp<AMessage> &reply) {
                 }
 
                 default:
-                {
-                    AString mimeType;
-                    status_t err = ExtendedCodec::handleSupportedAudioFormats(
-                        audioDef->eEncoding, &mimeType);
-                    if (err == OK) {
-                        int channelCount;
-                        err = ExtendedCodec::getSupportedAudioFormatInfo(
-                                      &mimeType,
-                                      mOMX,
-                                      mNode,
-                                      kPortIndexOutput,
-                                      &channelCount);
-                        notify->setString("mime", mimeType.c_str());
-                        notify->setInt32("channel-count", channelCount);
-                        break;
-                    }
                     TRESPASS();
-                }
             }
             break;
         }
@@ -3125,11 +3100,16 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
         /* these are unfilled buffers returned by client */
         CHECK(msg->findInt32("err", &err));
 
-        ALOGV("[%s] saw error %d instead of an input buffer",
-             mCodec->mComponentName.c_str(), err);
+        if (err == OK) {
+            /* buffers with no errors are returned on MediaCodec.flush */
+            mode = KEEP_BUFFERS;
+        } else {
+            ALOGV("[%s] saw error %d instead of an input buffer",
+                 mCodec->mComponentName.c_str(), err);
+            eos = true;
+        }
 
         buffer.clear();
-        mode = KEEP_BUFFERS;
     }
 
     int32_t tmp;
@@ -3440,13 +3420,6 @@ void ACodec::BaseState::onOutputBufferDrained(const sp<AMessage> &msg) {
     android_native_rect_t crop;
     if (msg->findRect("crop",
             &crop.left, &crop.top, &crop.right, &crop.bottom)) {
-        if (mCodec->mInSmoothStreamingMode) {
-            OMX_COLOR_FORMATTYPE eColorFormat = OMX_COLOR_FormatUnused;
-            CHECK(msg->findInt32("color-format", (int32_t*)&eColorFormat));
-            ExtendedUtils::updateNativeWindowBufferGeometry(
-                    mCodec->mNativeWindow.get(), crop.right,
-                    crop.bottom, eColorFormat);
-        }
         CHECK_EQ(0, native_window_set_crop(
                 mCodec->mNativeWindow.get(), &crop));
     }
@@ -3659,7 +3632,6 @@ bool ACodec::UninitializedState::onAllocateComponent(const sp<AMessage> &msg) {
             ++matchIndex) {
         componentName = matchingCodecs.itemAt(matchIndex).mName.string();
         quirks = matchingCodecs.itemAt(matchIndex).mQuirks;
-        ExtendedCodec::overrideComponentName(quirks, msg, &componentName);
 
         pid_t tid = androidGetTid();
         int prevPriority = androidGetThreadPriority(tid);
@@ -4076,6 +4048,9 @@ void ACodec::ExecutingState::submitOutputMetaBuffers() {
                 break;
         }
     }
+
+    // *** NOTE: THE FOLLOWING WORKAROUND WILL BE REMOVED ***
+    mCodec->signalSubmitOutputMetaDataBufferIfEOS_workaround();
 }
 
 void ACodec::ExecutingState::submitRegularOutputBuffers() {
@@ -4222,6 +4197,19 @@ bool ACodec::ExecutingState::onMessageReceived(const sp<AMessage> &msg) {
             mCodec->onSignalEndOfInputStream();
             handled = true;
             break;
+        }
+
+        // *** NOTE: THE FOLLOWING WORKAROUND WILL BE REMOVED ***
+        case kWhatSubmitOutputMetaDataBufferIfEOS:
+        {
+            if (mCodec->mPortEOS[kPortIndexInput] &&
+                    !mCodec->mPortEOS[kPortIndexOutput]) {
+                status_t err = mCodec->submitOutputMetaDataBuffer();
+                if (err == OK) {
+                    mCodec->signalSubmitOutputMetaDataBufferIfEOS_workaround();
+                }
+            }
+            return true;
         }
 
         default:

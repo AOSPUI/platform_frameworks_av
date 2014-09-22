@@ -30,7 +30,6 @@
 #include <gui/Surface.h>
 #include <utils/String8.h>
 #include <cutils/properties.h>
-#include "include/ExtendedUtils.h"
 
 namespace android {
 
@@ -564,9 +563,6 @@ status_t CameraSource::initWithCameraAccess(
     mMeta->setInt32(kKeyStride,      mVideoSize.width);
     mMeta->setInt32(kKeySliceHeight, mVideoSize.height);
     mMeta->setInt32(kKeyFrameRate,   mVideoFrameRate);
-
-    ExtendedUtils::HFR::setHFRIfEnabled(params, mMeta);
-
     return OK;
 }
 
@@ -817,10 +813,6 @@ status_t CameraSource::read(
 void CameraSource::dataCallbackTimestamp(int64_t timestampUs,
         int32_t msgType, const sp<IMemory> &data) {
     ALOGV("dataCallbackTimestamp: timestamp %lld us", timestampUs);
-    if (!mStarted) {
-       ALOGD("Stop recording issued. Return here.");
-       return;
-    }
     Mutex::Autolock autoLock(mLock);
     if (!mStarted || (mNumFramesReceived == 0 && timestampUs < mStartTimeUs)) {
         ALOGV("Drop frame at %lld/%lld us", timestampUs, mStartTimeUs);

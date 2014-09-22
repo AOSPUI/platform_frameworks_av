@@ -1,8 +1,5 @@
 /*
 **
-** Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
-** Not a Contribution.
-**
 ** Copyright 2008, The Android Open Source Project
 **
 ** Licensed under the Apache License, Version 2.0 (the "License");
@@ -81,7 +78,6 @@
 #include "HDCP.h"
 #include "HTTPBase.h"
 #include "RemoteDisplay.h"
-#define DEFAULT_SAMPLE_RATE 44100
 
 namespace {
 using android::media::Metadata;
@@ -594,7 +590,7 @@ sp<MediaPlayerBase> MediaPlayerService::Client::setDataSource_pre(
     }
 
     if (!p->hardwareOutput()) {
-        mAudioOutput = new AudioOutput(mAudioSessionId);
+        mAudioOutput = new AudioOutput(mAudioSessionId, IPCThreadState::self()->getCallingUid());
         static_cast<MediaPlayerInterface*>(p.get())->setAudioSink(mAudioOutput);
     }
 
@@ -1300,12 +1296,13 @@ Exit:
 
 #undef LOG_TAG
 #define LOG_TAG "AudioSink"
-MediaPlayerService::AudioOutput::AudioOutput(int sessionId)
+MediaPlayerService::AudioOutput::AudioOutput(int sessionId, int uid)
     : mCallback(NULL),
       mCallbackCookie(NULL),
       mCallbackData(NULL),
       mBytesWritten(0),
       mSessionId(sessionId),
+      mUid(uid),
       mFlags(AUDIO_OUTPUT_FLAG_NONE) {
     ALOGV("AudioOutput(%d)", sessionId);
     mStreamType = AUDIO_STREAM_MUSIC;
@@ -1376,11 +1373,6 @@ uint32_t MediaPlayerService::AudioOutput::latency () const
     return mTrack->latency();
 }
 
-audio_stream_type_t MediaPlayerService::AudioOutput::streamType () const
-{
-    return mStreamType;
-}
-
 float MediaPlayerService::AudioOutput::msecsPerFrame() const
 {
     return mMsecsPerFrame;
@@ -1390,20 +1382,6 @@ status_t MediaPlayerService::AudioOutput::getPosition(uint32_t *position) const
 {
     if (mTrack == 0) return NO_INIT;
     return mTrack->getPosition(position);
-}
-
-ssize_t MediaPlayerService::AudioOutput::sampleRate() const
-{
-    if (mTrack == 0) return NO_INIT;
-    return DEFAULT_SAMPLE_RATE;
-}
-
-status_t MediaPlayerService::AudioOutput::getTimeStamp(uint64_t *tstamp)
-{
-    if (tstamp == 0) return BAD_VALUE;
-    if (mTrack == 0) return NO_INIT;
-    mTrack->getTimeStamp(tstamp);
-    return NO_ERROR;
 }
 
 status_t MediaPlayerService::AudioOutput::getFramesWritten(uint32_t *frameswritten) const
@@ -1461,48 +1439,7 @@ status_t MediaPlayerService::AudioOutput::open(
 {
     mCallback = cb;
     mCallbackCookie = cookie;
-    if (flags & AUDIO_OUTPUT_FLAG_LPA || flags & AUDIO_OUTPUT_FLAG_TUNNEL) {
-        ALOGV("AudioOutput open: with flags %x",flags);
-        channelMask = audio_channel_out_mask_from_count(channelCount);
-        if (0 == channelMask) {
-            ALOGE("open() error, can't derive mask for %d audio channels", channelCount);
-            return NO_INIT;
-        }
-        AudioTrack *audioTrack = NULL;
-        CallbackData *newcbd = NULL;
-        if (mCallback != NULL) {
-            newcbd = new CallbackData(this);
-            audioTrack = new AudioTrack(
-                             mStreamType,
-                             sampleRate,
-                             format,
-                             channelMask,
-                             0,
-                             flags,
-                             CallbackWrapper,
-                             newcbd,
-                             0,
-                             mSessionId);
-            if ((audioTrack == 0) || (audioTrack->initCheck() != NO_ERROR)) {
-                ALOGE("Unable to create audio track");
-                delete audioTrack;
-                delete newcbd;
-                return NO_INIT;
-            }
-        } else {
-            ALOGE("no callback supplied");
-            return NO_INIT;
-        }
-        deleteRecycledTrack();
 
-        ALOGV("setVolume");
-        mCallbackData = newcbd;
-        audioTrack->setVolume(mLeftVolume, mRightVolume);
-        mSampleRateHz = sampleRate;
-        mFlags = flags;
-        mTrack = audioTrack;
-        return NO_ERROR;
-    }
     // Check argument "bufferCount" against the mininum buffer count
     if (bufferCount < mMinBufferCount) {
         ALOGD("bufferCount (%d) is too small and increased to %d", bufferCount, mMinBufferCount);
@@ -1613,7 +1550,8 @@ status_t MediaPlayerService::AudioOutput::open(
                     0,  // notification frames
                     mSessionId,
                     AudioTrack::TRANSFER_CALLBACK,
-                    offloadInfo);
+                    offloadInfo,
+                    mUid);
         } else {
             t = new AudioTrack(
                     mStreamType,
@@ -1622,10 +1560,13 @@ status_t MediaPlayerService::AudioOutput::open(
                     channelMask,
                     frameCount,
                     flags,
-                    NULL,
-                    NULL,
-                    0,
-                    mSessionId);
+                    NULL, // callback
+                    NULL, // user data
+                    0, // notification frames
+                    mSessionId,
+                    AudioTrack::TRANSFER_DEFAULT,
+                    NULL, // offload info
+                    mUid);
         }
 
         if ((t == 0) || (t->initCheck() != NO_ERROR)) {
@@ -1731,6 +1672,7 @@ void MediaPlayerService::AudioOutput::switchToNextOutput() {
 
 ssize_t MediaPlayerService::AudioOutput::write(const void* buffer, size_t size)
 {
+    LOG_FATAL_IF(mCallback != NULL, "Don't call write if supplying a callback.");
 
     //ALOGV("write(%p, %u)", buffer, size);
     if (mTrack != 0) {
@@ -1762,7 +1704,7 @@ void MediaPlayerService::AudioOutput::pause()
 void MediaPlayerService::AudioOutput::close()
 {
     ALOGV("close");
-    if (mTrack != 0) mTrack.clear();
+    mTrack.clear();
 }
 
 void MediaPlayerService::AudioOutput::setVolume(float left, float right)
@@ -1815,97 +1757,55 @@ status_t MediaPlayerService::AudioOutput::attachAuxEffect(int effectId)
 void MediaPlayerService::AudioOutput::CallbackWrapper(
         int event, void *cookie, void *info) {
     //ALOGV("callbackwrapper");
-    if (event == AudioTrack::EVENT_UNDERRUN) {
-        ALOGW("Event underrun");
-        CallbackData *data = (CallbackData*)cookie;
-        data->lock();
-        AudioOutput *me = data->getOutput();
-        if (me == NULL) {
-            // no output set, likely because the track was scheduled to be reused
-            // by another player, but the format turned out to be incompatible.
-            data->unlock();
-            return;
-        }
-        ALOGD("Callback!!!");
-        (*me->mCallback)(
-            me, NULL, (size_t)AudioTrack::EVENT_UNDERRUN, me->mCallbackCookie, CB_EVENT_UNDERRUN);
+    CallbackData *data = (CallbackData*)cookie;
+    data->lock();
+    AudioOutput *me = data->getOutput();
+    AudioTrack::Buffer *buffer = (AudioTrack::Buffer *)info;
+    if (me == NULL) {
+        // no output set, likely because the track was scheduled to be reused
+        // by another player, but the format turned out to be incompatible.
         data->unlock();
-        return;
-    }
-    if (event == AudioTrack::EVENT_HW_FAIL) {
-        ALOGW("Event hardware failure");
-        CallbackData *data = (CallbackData*)cookie;
-        if (data != NULL) {
-            data->lock();
-            AudioOutput *me = data->getOutput();
-            if (me == NULL) {
-                // no output set, likely because the track was
-                // scheduled to be reused
-                // by another player, but the format turned out
-                // to be incompatible.
-                data->unlock();
-                return;
-            }
-            ALOGV("Callback!!!");
-            (*me->mCallback)(me, NULL, (size_t)AudioTrack::EVENT_HW_FAIL,
-                             me->mCallbackCookie, CB_EVENT_HW_FAIL);
-            data->unlock();
+        if (buffer != NULL) {
+            buffer->size = 0;
         }
         return;
     }
-    if (event == AudioTrack::EVENT_MORE_DATA) {
-        CallbackData *data = (CallbackData*)cookie;
-        data->lock();
-        AudioOutput *me = data->getOutput();
-        AudioTrack::Buffer *buffer = (AudioTrack::Buffer *)info;
-        if (me == NULL) {
-            // no output set, likely because the track was scheduled to be reused
-            // by another player, but the format turned out to be incompatible.
-            data->unlock();
-            if (buffer != NULL) {
-                buffer->size = 0;
-            }
-            return;
+
+    switch(event) {
+    case AudioTrack::EVENT_MORE_DATA: {
+        size_t actualSize = (*me->mCallback)(
+                me, buffer->raw, buffer->size, me->mCallbackCookie,
+                CB_EVENT_FILL_BUFFER);
+
+        if (actualSize == 0 && buffer->size > 0 && me->mNextOutput == NULL) {
+            // We've reached EOS but the audio track is not stopped yet,
+            // keep playing silence.
+
+            memset(buffer->raw, 0, buffer->size);
+            actualSize = buffer->size;
         }
 
-        switch(event) {
-        case AudioTrack::EVENT_MORE_DATA: {
-            size_t actualSize = (*me->mCallback)(
-                    me, buffer->raw, buffer->size, me->mCallbackCookie,
-                    CB_EVENT_FILL_BUFFER);
-
-            if (actualSize == 0 && buffer->size > 0 && me->mNextOutput == NULL) {
-                // We've reached EOS but the audio track is not stopped yet,
-                // keep playing silence.
-
-                memset(buffer->raw, 0, buffer->size);
-                actualSize = buffer->size;
-            }
-
-            buffer->size = actualSize;
-            } break;
+        buffer->size = actualSize;
+        } break;
 
 
-        case AudioTrack::EVENT_STREAM_END:
-            ALOGV("callbackwrapper: deliver EVENT_STREAM_END");
-            (*me->mCallback)(me, NULL /* buffer */, 0 /* size */,
-                    me->mCallbackCookie, CB_EVENT_STREAM_END);
-            break;
+    case AudioTrack::EVENT_STREAM_END:
+        ALOGV("callbackwrapper: deliver EVENT_STREAM_END");
+        (*me->mCallback)(me, NULL /* buffer */, 0 /* size */,
+                me->mCallbackCookie, CB_EVENT_STREAM_END);
+        break;
 
-        case AudioTrack::EVENT_NEW_IAUDIOTRACK :
-            ALOGV("callbackwrapper: deliver EVENT_TEAR_DOWN");
-            (*me->mCallback)(me,  NULL /* buffer */, 0 /* size */,
-                    me->mCallbackCookie, CB_EVENT_TEAR_DOWN);
-            break;
+    case AudioTrack::EVENT_NEW_IAUDIOTRACK :
+        ALOGV("callbackwrapper: deliver EVENT_TEAR_DOWN");
+        (*me->mCallback)(me,  NULL /* buffer */, 0 /* size */,
+                me->mCallbackCookie, CB_EVENT_TEAR_DOWN);
+        break;
 
-        default:
-            ALOGE("received unknown event type: %d inside CallbackWrapper !", event);
-        }
-
-        data->unlock();
+    default:
+        ALOGE("received unknown event type: %d inside CallbackWrapper !", event);
     }
 
-    return;
+    data->unlock();
 }
 
 int MediaPlayerService::AudioOutput::getSessionId() const
@@ -1936,11 +1836,6 @@ status_t MediaPlayerService::AudioCache::getPosition(uint32_t *position) const
     if (position == 0) return BAD_VALUE;
     *position = mSize;
     return NO_ERROR;
-}
-
-ssize_t MediaPlayerService::AudioCache::sampleRate() const
-{
-    return mSampleRate;
 }
 
 status_t MediaPlayerService::AudioCache::getFramesWritten(uint32_t *written) const

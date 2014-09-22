@@ -316,9 +316,19 @@ status_t AudioSystem::getLatency(audio_io_handle_t output,
                                  audio_stream_type_t streamType,
                                  uint32_t* latency)
 {
-    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
-    if (af == 0) return PERMISSION_DENIED;
-    *latency = af->latency(output);
+    OutputDescriptor *outputDesc;
+
+    gLock.lock();
+    outputDesc = AudioSystem::gOutputs.valueFor(output);
+    if (outputDesc == NULL) {
+        gLock.unlock();
+        const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+        if (af == 0) return PERMISSION_DENIED;
+        *latency = af->latency(output);
+    } else {
+        *latency = outputDesc->latency;
+        gLock.unlock();
+    }
 
     ALOGV("getLatency() streamType %d, output %d, latency %d", streamType, output, *latency);
 
